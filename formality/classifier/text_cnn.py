@@ -1,3 +1,4 @@
+"""Text CNN Model Classifier."""
 from torch.utils.data import Dataset, DataLoader
 from torchtext import data, datasets
 import spacy
@@ -10,7 +11,9 @@ import sys
 import torchtext
 import random
 
+
 def read_file(path, sentences, scores):
+    """Helper to read enron formality corpus."""
     with open(path, "r") as f:
         for line in f:
             elems = line.strip().split("\t")
@@ -19,6 +22,8 @@ def read_file(path, sentences, scores):
 
 
 class FormalityDataset(Dataset):
+    """Enron Dataset Class."""
+
     def __init__(self):
         with open(".data/formality-corpus/"):
             self.sentences = []
@@ -28,12 +33,17 @@ class FormalityDataset(Dataset):
             read_file("./data/formality-corpus/email", self.sentences, self.scores)
             read_file("./data/formality-corpus/news", self.sentences, self.scores)
 
+
 def generate_batch(batch):
+    """Create batch."""
     label = torch.tensor([entry[0] for entry in batch])
     text = [entry[1] for entry in batch]
     return text, label
 
+
 class TextCNN(nn.Module):
+    """Text CNN model."""
+
     def __init__(
         self,
         vocab_size,
@@ -76,6 +86,7 @@ class TextCNN(nn.Module):
 
 
 def train_model(model, train_iterator, loss_function, optimizer, device):
+    """Training Loop."""
     train_loss = 0
     correct = 0
     model.train()
@@ -95,6 +106,7 @@ def train_model(model, train_iterator, loss_function, optimizer, device):
 
 
 def eval_model(model, eval_iterator, loss_function, device):
+    """Eval Loop."""
     eval_loss = 0
     correct = 0
     model.eval()
@@ -114,7 +126,20 @@ def eval_model(model, eval_iterator, loss_function, device):
 
 @click.command()
 @click.option("-d", "--device", default="cpu", show_default=True, help="Device Type")
-@click.option("-ds", "--dataset", default="enron", show_default=True, help="Dataset. Currently Supported: [enron, AmazonReviewPolarity]")
+@click.option(
+    "-ds",
+    "--dataset",
+    default="enron",
+    show_default=True,
+    help="Dataset. Currently Supported: [enron, AmazonReviewPolarity]",
+)
+@click.option(
+    "-i",
+    "--dataset-path",
+    default="../data/formality-corpus/",
+    show_default=True,
+    help="Dataset Path.",
+)
 @click.option(
     "-ml", "--max-len", default=80, show_default=True, help="Max Length of Sequences"
 )
@@ -140,11 +165,12 @@ def eval_model(model, eval_iterator, loss_function, device):
     "--filter-sizes",
     default="1,2,3,4,5",
     show_default=True,
-    help="Size of Filters to apply"
+    help="Size of Filters to apply",
 )
 def main(
     device,
     dataset,
+    dataset_path,
     max_len,
     batch_size,
     learning_rate,
@@ -166,7 +192,7 @@ def main(
         fields = {"label": ("label", LABEL), "sentence": ("text", TEXT)}
 
         train_data, valid_data, test_data = data.TabularDataset.splits(
-            path="./data/formality-corpus/",
+            path=dataset_path,
             train="train.json",
             validation="dev.json",
             test="test.json",
@@ -190,7 +216,7 @@ def main(
         LABEL = data.Field(sequential=False)
         fields = [("label", LABEL), ("name", None), ("text", TEXT)]
         train_data, valid_data = data.TabularDataset.splits(
-            path="./data/amazon_review_polarity_csv/",
+            path=dataset_path,
             train="train.csv",
             test="test.csv",
             format="CSV",
@@ -207,38 +233,33 @@ def main(
         )
     elif dataset == "Yelp":
         print("Reading Yelp Dataset")
-        train_data, test_data = datasets.YelpReviewPolarity(root='./data/', ngrams=1)
-        train_iterator =  DataLoader(train_data, batch_size = batch_size, shuffle=True, collate_fn=generate_batch)
-        valid_iterator =  DataLoader(test_data, batch_size = batch_size, shuffle=True, collate_fn=generate_batch)
+        train_data, test_data = datasets.YelpReviewPolarity(root="./data/", ngrams=1)
+        train_iterator = DataLoader(
+            train_data, batch_size=batch_size, shuffle=True, collate_fn=generate_batch
+        )
+        valid_iterator = DataLoader(
+            test_data, batch_size=batch_size, shuffle=True, collate_fn=generate_batch
+        )
         vocab_size = len(train_data.get_vocab())
     elif dataset == "IMDB":
         print("Reading IMDB dataset")
-        TEXT = data.Field(tokenize = 'spacy', batch_first = True, lower=True)
-        LABEL = data.LabelField(dtype = torch.float)
-        train_data, test_data = datasets.IMDB.splits(TEXT, LABEL, root='./data/')
+        TEXT = data.Field(tokenize="spacy", batch_first=True, lower=True)
+        LABEL = data.LabelField(dtype=torch.float)
+        train_data, test_data = datasets.IMDB.splits(TEXT, LABEL, root="./data/")
         train_data, valid_data = train_data.split(random_state=random.seed(SEED))
         TEXT.build_vocab(train_data)
         LABEL.build_vocab(train_data)
         train_iterator, valid_iterator, test_iterator = data.BucketIterator.splits(
-                (
-                    train_data, valid_data, test_data
-                    ),
-                batch_size = batch_size, 
-                device = device
-                )
+            (train_data, valid_data, test_data), batch_size=batch_size, device=device
+        )
         vocab_size = len(TEXT.vocab)
     else:
         raise ValueError("Dataset: {} currently not supported".format(dataset))
-    
+
     print("Reading dataset completed.")
     filter_sizes = [int(x) for x in filter_sizes.split(",")]
     model = TextCNN(
-        vocab_size,
-        [1, 2, 3, 4, 5],
-        num_filters,
-        embedding_dim,
-        num_classes,
-        dropout,
+        vocab_size, filter_sizes, num_filters, embedding_dim, num_classes, dropout,
     )
     model.to(device)
     print("Model Initialized")
