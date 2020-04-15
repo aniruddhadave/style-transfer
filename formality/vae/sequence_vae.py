@@ -113,6 +113,7 @@ class VAE(nn.Module):
         return logp, mean, logv, z
 
     def infer(self, n=4, z=None):
+        # TODO: Fix Bugs
         # Create hidden
         if z is None:
             batch_size = n
