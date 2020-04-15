@@ -1,3 +1,4 @@
+"""Generate distributions on different attributes of formality."""
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
@@ -7,10 +8,12 @@ from nltk.tokenize.stanford import StanfordTokenizer
 from nltk.parse.corenlp import CoreNLPParser
 import random
 from nltk.tokenize import wordpunct_tokenize 
+import sys
 
 nltk.download('stopwords')
 nltk.download('punkt')
-raw_dataset_path = './data/formality-corpus/'
+
+raw_dataset_path = '../data/formality-corpus/'
 scores = []
 sentences = []
 
@@ -20,7 +23,7 @@ news = raw_dataset_path + '/news'
 email = raw_dataset_path + '/email'
 categories = [answers, blog, news, email]
 
-#"""
+
 VC = re.compile('[aeiou]+[^aeiou]+', re.I)
 def count_syllables(word):
         return len(VC.findall(word))
@@ -29,14 +32,36 @@ def fk_score(num_words, num_syllables, num_sentences):
     return 206.835 -1.015*(float(num_words)/num_sentences) -84.6*(num_syllables/float(num_words))
 
 print("Reading raw dataset files")
-for cat in categories:
-    print("{:20s}  {:20s}".format("Reading File: ", cat))
-    with open(cat, 'r', encoding='utf-8', errors= 'ignore') as f:
-        for line in f:
-            elements = line.strip().split('\t')
-            scores.append(float(elements[0].strip()))
-            sentences.append(elements[3].strip())
+if sys.argv[1] == '1':
+    for cat in categories:
+        print("{:20s}  {:20s}".format("Reading File: ", cat))
+        with open(cat, 'r', encoding='utf-8', errors= 'ignore') as f:
+            for line in f:
+                elements = line.strip().split('\t')
+                scores.append(float(elements[0].strip()))
+                sentences.append(elements[3].strip())
+# Read GYAFC
+elif sys.argv[1] == '2':
+    raw_dataset_path = '../data/GYAFC_Corpus/'
+    entertainment = raw_dataset_path + 'Entertainment_Music/val/'
+    relationship = raw_dataset_path + 'Family_Relationships/val/'
+    categories = [entertainment, relationship]
+    for cat in categories:
+        print("{:20s}  {:20s}".format("Reading File: ", cat))
+        with open(cat + '/formal', 'r', encoding='utf-8', errors= 'ignore') as f:
+            for line in f:
+                scores.append(1)
+                sentences.append(line.strip())
+        with open(cat + '/informal', 'r', encoding='utf-8', errors= 'ignore') as f:
+            for line in f:
+                scores.append(-1)
+                sentences.append(line.strip())
+
 print("Finished Reading Files")
+if sys.argv[1] == '1':
+    name  = 'enron'
+elif sys.argv[1] == '2':
+    name = 'gyafc'
 
 stopwords = nltk.corpus.stopwords.words('english')
 
@@ -61,19 +86,19 @@ formal_ch_len = [item[2] for item in formal_lengths]
 informal_ch_len = [item[2] for item in informal_lengths]
 formal_word_len = [item[3] for item in formal_lengths]
 informal_word_len = [item[3] for item in informal_lengths]
-print("Formal Ch Len Stats:")
+print("Formal Character Length Stats:")
 print("Mean: ", np.mean(formal_ch_len, axis=0))
 print("Std: ", np.std(formal_ch_len, axis=0))
 
-print("Informal Ch Len Stats:")
+print("Informal Character Length Stats:")
 print("Mean: ", np.mean(informal_ch_len, axis=0))
 print("Std: ", np.std(informal_ch_len, axis=0))
 
-print("Formal Word Len Stats:")
+print("Formal Word Length Stats:")
 print("Mean: ", np.mean(formal_word_len, axis=0))
 print("Std: ", np.std(formal_word_len, axis=0))
 
-print("Informal Word Len Stats:")
+print("Informal Word Length Stats:")
 print("Mean: ", np.mean(informal_word_len, axis=0))
 print("Std: ", np.std(informal_word_len, axis=0))
 
@@ -82,32 +107,32 @@ sns.distplot([item[2] for item in formal_lengths], color="dodgerblue", label="Fo
 sns.distplot([item[2] for item in informal_lengths], color="red", label="Informal")
 plt.legend()
 plt.title("Character length")
-plt.savefig('ch-len.png')
+plt.savefig(name + '-ch-len.png')
 plt.clf()
 sns.distplot([item[3] for item in formal_lengths], color="dodgerblue", label="Formal")
 sns.distplot([item[3] for item in informal_lengths], color="red", label="Informal")
 plt.legend()
 plt.title("Word length")
-plt.savefig('word-len.png')
+plt.savefig(name + '-word-len.png')
 plt.clf()
 sns.distplot([item[4] for item in formal_lengths], color="dodgerblue", label="Formal")
 sns.distplot([item[4] for item in informal_lengths], color="red", label="Informal")
 plt.legend()
 plt.title("FK score")
-plt.savefig('fk_score.png')
+plt.savefig(name + '-fk_score.png')
 plt.clf()
 sns.distplot([item[5] for item in formal_lengths], color="dodgerblue", label="Formal")
 sns.distplot([item[5] for item in informal_lengths], color="red", label="Informal")
 plt.legend()
 plt.title("Stopwords")
-plt.savefig('Stopwords.png')
+plt.savefig(name + '-stopwords.png')
 
 plt.clf()
 sns.distplot([item[6] for item in formal_lengths], color="dodgerblue", label="Formal")
 sns.distplot([item[6] for item in informal_lengths], color="red", label="Informal")
 plt.legend()
-plt.title("Caps")
-plt.savefig('Caps.png')
+plt.title("capitalization")
+plt.savefig(name + '-capitalization.png')
 
 
 # Scikit n-gram model
@@ -129,7 +154,6 @@ random.shuffle(data)
 sent = [item[0] for item in all_data]
 score = [item[1] for item in all_data]
 feats = [item[2:] for item in all_data]
-
 """
 word_vectorizer = TfidfVectorizer(
     sublinear_tf=True,
@@ -140,8 +164,8 @@ word_vectorizer = TfidfVectorizer(
     max_features=100000
     )
 """
-from sklearn.feature_extraction.text import CountVectorizer
-vectorizer = CountVectorizer(ngram_range=(1,3))
+#from sklearn.feature_extraction.text import CountVectorizer
+vectorizer = CountVectorizer(ngram_range=(1,))
 sent_vec = vectorizer.fit_transform(sent)
 #word_vectorizer.fit(sent)
 #sent_vec = word_vectorizer.transform(sent)
@@ -166,14 +190,3 @@ for alpha in [0,0.5,1]:
     print("Alpha: ", alpha, "Test Score: ", sc)
 
 #"""
-import numpy
-from keras.datasets import imdb
-from keras.models import Sequential
-from keras.layers import Dense
-from keras.layers import LSTM
-from keras.layers.embeddings import Embedding
-from keras.preprocessing import sequence
-# fix random seed for reproducibility
-numpy.random.seed(7)
-
-
