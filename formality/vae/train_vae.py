@@ -1,6 +1,6 @@
 import click
 import time
-from models.sequence_vae import VAE
+from sequence_vae import VAE
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn as nn
 import torch
@@ -10,7 +10,25 @@ from torchtext import data, datasets
 import numpy as np
 from collections import defaultdict
 import json
+
+
 def get_experiment_name(
+    embedding_dim,
+    hidden_dim,
+    latent_dim,
+    num_layers,
+    max_seq_len,
+    dropout,
+    word_dropout,
+    batch_size,
+    rnn_type,
+    bidirectional,
+    learning_rate,
+    epochs,
+    ts,
+):
+    """Helper func to set log directory name."""
+    name = "exp_ed{}_hd{}_ld{}_nl{}_seqlen{}_dp{}_wdp{}_bs{}_{}_lr{}_epochs{}_".format(
         embedding_dim,
         hidden_dim,
         latent_dim,
@@ -20,27 +38,14 @@ def get_experiment_name(
         word_dropout,
         batch_size,
         rnn_type,
-        bidirectional,
         learning_rate,
         epochs,
-        ts
-        ):
-    """Helper func to set log directory name."""
-    name = '_ed{}_hd{}_ld{}_nl{}_seqlen{}_dp{}_wdp{}_bs{}_{}_lr{}_epochs{}_'.format(embedding_dim,
-            hidden_dim,
-            latent_dim,
-            num_layers,
-            max_seq_len,
-            dropout,
-            word_dropout,
-            batch_size,
-            rnn_type,
-            learning_rate,
-            epochs)
+    )
     if bidirectional:
-        name += 'bidirectional_'
+        name += "bidirectional_"
     name += ts
     return name
+
 
 @click.command()
 @click.option(
@@ -62,9 +67,7 @@ def get_experiment_name(
 @click.option(
     "-wd", "--word-dropout", default=0.0, show_default=True, help="Word Dropout"
 )
-@click.option(
-    "-bs", "--batch-size", default=32, show_default=True, help="Batch Size"
-)
+@click.option("-bs", "--batch-size", default=32, show_default=True, help="Batch Size")
 @click.option(
     "-rt",
     "--rnn-type",
@@ -73,7 +76,10 @@ def get_experiment_name(
     help="RNN Type [gru, rnn, lstm]",
 )
 @click.option(
-    "--bidirectional/--unidirectional", default=False, show_default=True, help="Bidirectional RNN"
+    "--bidirectional/--unidirectional",
+    default=False,
+    show_default=True,
+    help="Bidirectional RNN",
 )
 @click.option(
     "-lr", "--learning-rate", default=0.001, show_default=True, help="Learning Rate"
@@ -82,23 +88,23 @@ def get_experiment_name(
 @click.option(
     "-l",
     "--tensorboard-log",
-    default='./exp',
+    default="./logs/",
     show_default=True,
     help="Tensorboard Log Dir",
 )
 @click.option(
     "-i",
     "--input-data-dir",
-    default='./data/',
+    default="../data/",
     show_default=True,
-    help="Model Save Dir",
+    help="Input Data Directory",
 )
 @click.option(
     "-o",
     "--output-data-dir",
-    default='./models/',
+    default="../models/",
     show_default=True,
-    help="Model Save Dir",
+    help="Model Save Directory",
 )
 @click.option("-d", "--device", default="cpu", show_default=True, help="Device")
 def main(
@@ -155,6 +161,7 @@ def main(
         dropout,
         word_dropout,
         bidirectional,
+        TEXT
     )
 
     model.to(device)
@@ -174,7 +181,7 @@ def main(
         learning_rate,
         epochs,
         ts,
-        )
+    )
     writer = SummaryWriter(tensorboard_log + exp_name)
 
     loss_function = torch.nn.NLLLoss()
@@ -199,25 +206,41 @@ def main(
             logp = logp.view(-1, logp.size(2))
             target = target.view(-1)
             nll_loss = loss_function(logp, target)
-            kl_loss, kl_weight = kld(logvar, mean, i + epoch*len(train_iterator), 0.0025, 2500)
+            kl_loss, kl_weight = kld(
+                logvar, mean, i + epoch * len(train_iterator), 0.0025, 2500
+            )
             loss = (nll_loss + kl_loss * kl_weight) / batch_size
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             step += 1
-            writer.add_scalar('train/ELBO', loss.item(), i + epoch*len(train_iterator))
-            writer.add_scalar('train/nll_loss', nll_loss.item()/batch_size, i + epoch*len(train_iterator))
-            writer.add_scalar('train/kl_loss', kl_loss.item()/batch_size, i + epoch*len(train_iterator))
-            writer.add_scalar('train/kl_weight', kl_weight/batch_size, i + epoch*len(train_iterator))
+            writer.add_scalar(
+                "train/ELBO", loss.item(), i + epoch * len(train_iterator)
+            )
+            writer.add_scalar(
+                "train/nll_loss",
+                nll_loss.item() / batch_size,
+                i + epoch * len(train_iterator),
+            )
+            writer.add_scalar(
+                "train/kl_loss",
+                kl_loss.item() / batch_size,
+                i + epoch * len(train_iterator),
+            )
+            writer.add_scalar(
+                "train/kl_weight",
+                kl_weight / batch_size,
+                i + epoch * len(train_iterator),
+            )
             elbo += loss.item()
-        writer.add_scalar('train-epoch/elbo', elbo/len(train_iterator), epoch)
+        writer.add_scalar("train-epoch/elbo", elbo / len(train_iterator), epoch)
         if save:
-            checkpoint = output_data_dir + exp_name + str(epoch) + '.pt'
+            checkpoint = output_data_dir + exp_name + str(epoch) + ".pt"
             torch.save(model.state_dict(), checkpoint)
         return loss.item(), nll_loss.item(), kl_loss.item()
-    
-    def eval(step,device, epoch, latent_store, store=False):
+
+    def eval(step, device, epoch, latent_store, store=False):
         model.eval()
         elbo = 0
         for i, batch in enumerate(val_iterator):
@@ -229,27 +252,41 @@ def main(
             logp = logp.view(-1, logp.size(2))
             target = target.view(-1)
             nll_loss = loss_function(logp, target)
-            kl_loss, kl_weight = kld(logvar, mean, (epoch+1)*len(val_iterator), 0.0025, 2500)
+            kl_loss, kl_weight = kld(
+                logvar, mean, (epoch + 1) * len(val_iterator), 0.0025, 2500
+            )
             loss = (nll_loss + kl_loss * kl_weight) / batch_size
 
-            writer.add_scalar('val/ELBO', loss.item(), i + epoch*len(val_iterator))
-            writer.add_scalar('val/nll_loss', nll_loss.item()/batch_size, i + epoch*len(val_iterator))
-            writer.add_scalar('val/kl_loss', kl_loss.item()/batch_size, i + epoch*len(val_iterator))
-            writer.add_scalar('val/kl_weight', kl_weight/batch_size, i + epoch*len(val_iterator))
+            writer.add_scalar("val/ELBO", loss.item(), i + epoch * len(val_iterator))
+            writer.add_scalar(
+                "val/nll_loss",
+                nll_loss.item() / batch_size,
+                i + epoch * len(val_iterator),
+            )
+            writer.add_scalar(
+                "val/kl_loss",
+                kl_loss.item() / batch_size,
+                i + epoch * len(val_iterator),
+            )
+            writer.add_scalar(
+                "val/kl_weight", kl_weight / batch_size, i + epoch * len(val_iterator)
+            )
             elbo += loss.item()
             if store:
-                if 'target' not in latent_store:
-                    latent_store['target'] = list()
-                latent_store['target'] += TEXT.reverse(target.view(batch_size,-1))
-                if 'z' not in latent_store:
-                    latent_store['z'] = z
+                if "target" not in latent_store:
+                    latent_store["target"] = list()
+                latent_store["target"] += TEXT.reverse(target.view(batch_size, -1))
+                if "z" not in latent_store:
+                    latent_store["z"] = z
                 else:
-                    latent_store['z'] = torch.cat((latent_store['z'], z), dim=0) 
-        writer.add_scalar('val-epoch/elbo', elbo/len(train_iterator), epoch)
+                    latent_store["z"] = torch.cat((latent_store["z"], z), dim=0)
+        writer.add_scalar("val-epoch/elbo", elbo / len(train_iterator), epoch)
         if store:
-            latent_variables = {'target':latent_store['target'],
-                    'z':latent_store['z'].tolist()}
-            with open(output_data_dir +'dump_' + exp_name, 'w') as f:
+            latent_variables = {
+                "target": latent_store["target"],
+                "z": latent_store["z"].tolist(),
+            }
+            with open(output_data_dir + "dump_" + exp_name, "w") as f:
                 json.dump(latent_variables, f)
         return loss.item(), nll_loss.item(), kl_loss.item()
 
@@ -257,13 +294,16 @@ def main(
     latent_store = {}
     for epoch in range(epochs):
         save = False
-        if epoch == epochs-1:
+        if epoch == epochs - 1:
             save = True
-        loss, n, k = train(step,device, epoch, save)
+        loss, n, k = train(step, device, epoch, save)
         print("Train Loss: ", loss, "\t", n, "\t", k)
-        loss, n, k = eval(step,device, epoch, latent_store, save)
+        loss, n, k = eval(step, device, epoch, latent_store, save)
         print("Eval Loss: ", loss, "\t", n, "\t", k)
 
+
+    with open(output_data_dir + "/" + exp_name + "_field.pkl", 'wb') as fobj:
+        torch.save(TEXT, fobj)
 
 if __name__ == "__main__":
     main()
