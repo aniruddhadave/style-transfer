@@ -53,6 +53,7 @@ class PennTreeBankDataset(Dataset):
         self.vocab_save = path + "/ptb.vocab.json"
 
         if load_dataset:
+            # TODO: Fix Bug when loading vocab itos ids become str
             self._load_dataset()
         else:
             self._create_dataset()
@@ -147,6 +148,11 @@ class PennTreeBankDataset(Dataset):
             vocab = json.load(fobj)
         self.stoi = vocab["stoi"]
         self.itos = vocab["itos"]
+        self.vocab_size = len(self.stoi)
+        self.pad_id = self.stoi[self.pad]
+        self.unk_id = self.stoi[self.unk]
+        self.sos_id = self.stoi[self.sos]
+        self.eos_id = self.stoi[self.eos]
 
 
 def get_experiment_name(
@@ -185,12 +191,14 @@ def get_experiment_name(
 
 
 def kld(logvar, mean, step, k, x0):
+    """Estimate KL Loss. """
     kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
     kl_weight = float(1 / (1 + np.exp(-k * (step - x0))))
     return kl_loss, kl_weight
 
 
 def rev(batch, train_dataset):
+    """Reverse string from tokens to words."""
     res = ""
     for i in range(batch.size(0)):
         res += str(i) + " : " + " ".join([train_dataset.itos[word.item()] for word in batch[i] if word.item() != train_dataset.stoi['<pad>']])
@@ -251,14 +259,14 @@ def tokenizer(text):  # create a tokenizer function
 @click.option(
     "-i",
     "--input-data-dir",
-    default="../data/",
+    default="./penn-treebank/",
     show_default=True,
     help="Input Data Directory",
 )
 @click.option(
     "-o",
     "--output-data-dir",
-    default="../models/",
+    default="./models/",
     show_default=True,
     help="Model Save Directory",
 )
@@ -314,41 +322,6 @@ def main(
         shuffle=False,
         pin_memory=torch.cuda.is_available(),
     )
-    # test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False, pin_memory=torch.cuda.is_available())
-    # TEXT = data.Field(
-    #     init_token="<sos>",
-    #     eos_token="<eos>",
-    #     unk_token="unk",
-    #     tokenize=tokenizer,
-    #     batch_first=True,
-    #     lower=True,
-    #     #fix_length=max_seq_len,
-    # )
-    # train_dataset, val_dataset, test_dataset = datasets.PennTreebank.splits(
-    #     text_field=TEXT, root=input_data_dir
-    # )
-    #
-    # TEXT.build_vocab(train_dataset)
-    # vocab_size = len(TEXT.vocab)
-    # print("Vocab Size: {}".format(vocab_size))
-
-    # # 2. Create Iterator
-    # train_iterator, val_iterator, test_iterator = data.BucketIterator.splits(
-    #     (train_dataset, val_dataset, test_dataset),
-    #     batch_size=batch_size,
-    #     sort_key = lambda x: len(x.text),
-    #     sort_within_batch=False,
-    #     device=device,
-    # )
-    # for i, b in enumerate(train_iterator):
-    #     print(b.text.shape)
-    #     sys.exit()
-    # train_iterator, val_iterator, test_iterator = data.BPTTIterator.splits(
-    #    (train_dataset, val_dataset, test_dataset),
-    #    batch_size=batch_size,
-    #    bptt_len=max_seq_len,
-    #    device=device,
-    # )
 
     # 3. Create Model
     model = VAE(
@@ -405,34 +378,21 @@ def main(
             batch_size = batch["text"].size(0)
             text = batch["text"].to(device)  # batch_size x seq_len
             target = batch["target"].to(device)  # batch_size x seq_len
-            # print("Input Size: ", text.size())
-            # print("Output Size: ", target.size())
             logp, mean, logvar, z = model(text, batch["length"])
-            # print("Logp Size: ", logp.size())
-            # print("Mean Size: ", mean.size())
-            # print("logvar Size: ", logvar.size())
 
             # Calculate loss
             logp = logp.view(-1, logp.size(2))
-            # print("Resize logp: ", logp.size())
             target = target[:, :torch.max(batch['length']).item()].contiguous().view(-1)
-            # target = target.view(-1)
-            # print("Resize targte: ", target.size())
             
             nll_loss = loss_function(logp, target)
             kl_loss, kl_weight = kld(
                 logvar, mean, i + epoch * len(train_loader), 0.0025, 2500
             )
             loss = (nll_loss + kl_loss * kl_weight) / batch_size
-            # print("NLL Loss: ", nll_loss.item())
-            # print("KL Loss: ", kl_loss.item())
-            # print("KL Weight", kl_weight)
             if i == len(train_loader)-1:
                 print("True Sentences: ")
                 print(rev(batch["text"][0:10], train_dataset))
                 gen, _ = model.infer(z=z[:10])
-                #print("Target Sentences: ")
-                #print(rev(batch["target"][0:2], train_dataset))
                 print("Predicted Sentences: ")
                 print(rev(gen, train_dataset))
             optimizer.zero_grad()
@@ -457,14 +417,6 @@ def main(
             )
             elbo += loss.item()
         writer.add_scalar("train-epoch/elbo", elbo / len(train_loader), epoch)
-        """
-        for i ,batch in enumerate(train_iterator):
-            print("True Sentence: ", rev(batch.text, TEXT))
-            _, _, _, z = model(batch.text)
-            gen, _ = model.infer(z=z)
-            print("Predicted Sentence: ", rev(gen, TEXT))
-            break
-        """
         if save:
             checkpoint = output_data_dir + exp_name + str(epoch) + ".pt"
             torch.save(model.state_dict(), checkpoint)
@@ -504,15 +456,6 @@ def main(
                 "val/kl_weight", kl_weight / batch_size, i + epoch * len(valid_loader)
             )
             elbo += loss.item()
-            store = False
-            # if store:
-            #     if "target" not in latent_store:
-            #         latent_store["target"] = list()
-            #     latent_store["target"] += TEXT.reverse(target.view(batch_size, -1))
-            #     if "z" not in latent_store:
-            #         latent_store["z"] = z
-            #     else:
-            #         latent_store["z"] = torch.cat((latent_store["z"], z), dim=0)
         writer.add_scalar("val-epoch/elbo", elbo / len(valid_loader), epoch)
         if store:
             latent_variables = {
@@ -534,8 +477,6 @@ def main(
         loss, n, k = eval(step, device, epoch, latent_store, save)
         print("Eval Loss: ", loss, "\t", n, "\t", k)
 
-    # with open(output_data_dir + "/" + exp_name + "_field.pkl", 'wb') as fobj:
-    #     torch.save(TEXT, fobj)
 
 
 if __name__ == "__main__":

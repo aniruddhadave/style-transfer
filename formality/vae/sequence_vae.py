@@ -111,6 +111,7 @@ class VAE(nn.Module):
             if self.rnn_type == 'lstm':
                 hidden = hidden.view(batch_size, self.hidden_dim * self.hidden_factor)
                 cell = cell.view(batch_size, self.hidden_dim * self.hidden_factor)
+                hidden = torch.cat((hidden, cell), dim=-1)
             else:
                 hidden = hidden.view(batch_size, self.hidden_dim * self.hidden_factor)
         else:
@@ -132,10 +133,10 @@ class VAE(nn.Module):
         hidden = self.latent_to_hidden(z)
         if self.bidirectional or self.num_layers > 1:
             if self.rnn_type == 'lstm':
-                hidden = hidden[:, :self.hidden_dim]
-                cell = cell[:, self.hidden_dim:]
-                hidden = hidden.contiguous().view(self.hidden_factor, batch_size, self.hidden_dim)
-                cell = cell.contiguous().view(self.hidden_factor, batch_size, self.hidden_dim)
+                hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_dim*2)
+                cell = hidden[:,:, self.hidden_dim:]
+                hidden = hidden[:,:, :self.hidden_dim]
+                #cell = cell.view(self.hidden_factor, batch_size, self.hidden_dim)
             else:
                 hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_dim)
         else:
@@ -222,7 +223,7 @@ class VAE(nn.Module):
             print("Generate Sentence: ", generated_sequence)
 
     def infer(self, n=4, z=None):
-        # TODO: Fix Bugs
+        # TODO: Use Beam Search for Inference
         # Create hidden
         if z is None:
             batch_size = n
@@ -234,10 +235,9 @@ class VAE(nn.Module):
         hidden = self.latent_to_hidden(z)
         if self.bidirectional or self.num_layers > 1:
             if self.rnn_type == 'lstm':
-                hidden = hidden[:, :self.hidden_dim]
-                cell = cell[:, self.hidden_dim:]
-                hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_dim)
-                cell = cell.view(self.hidden_factor, batch_size, self.hidden_dim)
+                hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_dim*2)
+                cell = hidden[:,:, self.hidden_dim:]
+                hidden = hidden[:,:, :self.hidden_dim]
             else:
                 hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_dim)
         else:
@@ -257,31 +257,8 @@ class VAE(nn.Module):
             .fill_(self.pad_id)
             .to(self.device)
         )
-        """
-        print("Sequence ID: ")
-        print(sequence_id)
-        print("="*84)
-        print("Sequence Mask: ")
-        print(sequence_mask)
-        print("="*84)
-        print("Current Sequence: ")
-        print(current_sequence)
-        print("="*84)
-        print("Remaining Sequence: ")
-        print(remaining_sequence)
-        print("="*84)
-        print("Generated Sequence: ")
-        print(generated_sequences)
-        print("="*84)
-        """
         t = 0
         while t < self.seq_len and len(remaining_sequence) > 0:
-            """
-            print("t: ", t)
-            print("seq_len: ", self.seq_len)
-            print("remaining_seq: ", remaining_sequence)
-            print("="*84)
-            """
             if t == 0:
                 input_seq = (
                     torch.Tensor(batch_size).long().fill_(self.sos_id).to(self.device)
@@ -292,36 +269,20 @@ class VAE(nn.Module):
             # print("Input Seq: ", input_seq)
             # print("Input Seq Size: ", input_seq.size())
             input_seq = input_seq.unsqueeze(-1)
-            # print("Input Seq Size Unqueezes: ", input_seq.size())
-            # print("="*84)
 
             input_embedding = self.embedding(input_seq)
-            # print("Input Embedding: ", input_embedding)
-            # print("Input Embedding Shape:", input_embedding.size())
-            # print("="*84)
             if self.rnn_type == 'lstm':
                 output, (hidden, cell) = self.decoder_rnn(input_embedding, (hidden.contiguous(), cell.contiguous()))
             else:
                 output, hidden = self.decoder_rnn(input_embedding, hidden)
-            # print("Output Size: ", output.size())
             logits = self.output_to_vocab(output)
-            # print(logits.size())
-            # print("="*84)
             _, sample = torch.topk(logits, 1, dim=-1)
             # print("Sample sizze: ", sample.size())
             input_seq = sample.squeeze()
-            # print("Inut seq: ", input_seq.size())
-            # print("Input seq: ", input_seq)
-            # print("="*84)
             # Save the next word
             generated_sequences = self.save_sample(
                 generated_sequences, input_seq, current_sequence, t
             )
-            # print("generated_sequences: ", generated_sequences.size())
-            # print(input_seq != self.TEXT.vocab.stoi["<eos>"])
-            # print("EOS ID: ", self.TEXT.vocab.stoi['<eos>'])
-            # print("SOS ID: ", self.TEXT.vocab.stoi['<sos>'])
-            # print("Input Seq: ", input_seq)
             sequence_mask[current_sequence] = (input_seq != self.eos_id)
             # print("seq mask: ", sequence_mask)
             current_sequence = sequence_id.masked_select(sequence_mask)
