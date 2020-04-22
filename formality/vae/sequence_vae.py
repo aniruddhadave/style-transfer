@@ -61,8 +61,12 @@ class VAE(nn.Module):
         )
 
         # Latent
-        self.hidden_to_mean = nn.Linear(hidden_dim * self.hidden_factor, latent_dim)
-        self.hidden_to_logv = nn.Linear(hidden_dim * self.hidden_factor, latent_dim)
+        if self.rnn_type == 'lstm':
+            self.hidden_to_mean = nn.Linear(hidden_dim * self.hidden_factor * 2, latent_dim)
+            self.hidden_to_logv = nn.Linear(hidden_dim * self.hidden_factor * 2, latent_dim)
+        else:
+            self.hidden_to_mean = nn.Linear(hidden_dim * self.hidden_factor, latent_dim)
+            self.hidden_to_logv = nn.Linear(hidden_dim * self.hidden_factor, latent_dim)
 
         self.decoder_rnn = rnn(
             embedding_dim,
@@ -72,10 +76,16 @@ class VAE(nn.Module):
             bidirectional=self.bidirectional,
         )
         # Create intermediate and out linear layers
-        self.latent_to_hidden = nn.Linear(latent_dim, hidden_dim * self.hidden_factor)
-        self.output_to_vocab = nn.Linear(
-            hidden_dim * (2 if bidirectional else 1), vocab_size
-        )
+        if rnn_type == 'lstm':
+            self.latent_to_hidden = nn.Linear(latent_dim, hidden_dim * self.hidden_factor * 2)
+            self.output_to_vocab = nn.Linear(
+                hidden_dim * (2 if bidirectional else 1), vocab_size
+            )
+        else:
+            self.latent_to_hidden = nn.Linear(latent_dim, hidden_dim * self.hidden_factor)
+            self.output_to_vocab = nn.Linear(
+                hidden_dim * (2 if bidirectional else 1), vocab_size
+            )
 
     def forward(self, text, length):
         """
@@ -107,6 +117,7 @@ class VAE(nn.Module):
             if self.rnn_type == 'lstm':
                 hidden = hidden.squeeze()
                 cell = cell.squeeze()
+                hidden = torch.cat((hidden, cell,), dim=-1)
             else:
                 hidden = hidden.squeeze()
 
@@ -120,8 +131,18 @@ class VAE(nn.Module):
         # Decode
         hidden = self.latent_to_hidden(z)
         if self.bidirectional or self.num_layers > 1:
-            hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_dim)
+            if self.rnn_type == 'lstm':
+                hidden = hidden[:, :self.hidden_dim]
+                cell = cell[:, self.hidden_dim:]
+                hidden = hidden.contiguous().view(self.hidden_factor, batch_size, self.hidden_dim)
+                cell = cell.contiguous().view(self.hidden_factor, batch_size, self.hidden_dim)
+            else:
+                hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_dim)
         else:
+            if self.rnn_type == 'lstm':
+                cell = hidden[:, self.hidden_dim:]
+                hidden = hidden[:, :self.hidden_dim]
+                cell = cell.unsqueeze(0)
             hidden = hidden.unsqueeze(0)
         # As per the authors normal dropout didn't help the decoder use z
         # hence use word dropout
@@ -139,7 +160,10 @@ class VAE(nn.Module):
             decoder_embedding, sorted_lengths.tolist(), batch_first=True
         )
         #  Decoder Forward
-        output, _ = self.decoder_rnn(packed_input, hidden)
+        if self.rnn_type == 'lstm':
+            output, _ = self.decoder_rnn(packed_input, (hidden.contiguous(), cell.contiguous()))
+        else:
+            output, _ = self.decoder_rnn(packed_input, hidden)
 
         padded_output = nn.utils.rnn.pad_packed_sequence(output, batch_first=True)[0]
         padded_output = padded_output.contiguous()
@@ -209,8 +233,18 @@ class VAE(nn.Module):
         # Decode
         hidden = self.latent_to_hidden(z)
         if self.bidirectional or self.num_layers > 1:
-            hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_dim)
+            if self.rnn_type == 'lstm':
+                hidden = hidden[:, :self.hidden_dim]
+                cell = cell[:, self.hidden_dim:]
+                hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_dim)
+                cell = cell.view(self.hidden_factor, batch_size, self.hidden_dim)
+            else:
+                hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_dim)
         else:
+            if self.rnn_type == 'lstm':
+                cell = hidden[:, self.hidden_dim:]
+                hidden = hidden[:, :self.hidden_dim]
+                cell = cell.unsqueeze(0)
             hidden = hidden.unsqueeze(0)
 
         sequence_id = torch.arange(0, batch_size).long().to(self.device)
@@ -265,7 +299,10 @@ class VAE(nn.Module):
             # print("Input Embedding: ", input_embedding)
             # print("Input Embedding Shape:", input_embedding.size())
             # print("="*84)
-            output, hidden = self.decoder_rnn(input_embedding, hidden)
+            if self.rnn_type == 'lstm':
+                output, (hidden, cell) = self.decoder_rnn(input_embedding, (hidden.contiguous(), cell.contiguous()))
+            else:
+                output, hidden = self.decoder_rnn(input_embedding, hidden)
             # print("Output Size: ", output.size())
             logits = self.output_to_vocab(output)
             # print(logits.size())
@@ -301,6 +338,8 @@ class VAE(nn.Module):
                     # print("="*84)
                     # print("New input seq: ", input_seq)
                     hidden = hidden[:, remaining_sequence]
+                    if self.rnn_type == 'lstm':
+                        cell = cell[:, remaining_sequence]
                 # print("Old remaining seq: ", remaining_sequence)
                 remaining_sequence = (
                     torch.arange(0, len(remaining_sequence)).long().to(self.device)

@@ -262,6 +262,12 @@ def tokenizer(text):  # create a tokenizer function
     show_default=True,
     help="Model Save Directory",
 )
+@click.option(
+    "--load/--create",
+    default=False,
+    show_default=True,
+    help="Load data or Create Data",
+)
 @click.option("-d", "--device", default="cpu", show_default=True, help="Device")
 def main(
     embedding_dim,
@@ -280,19 +286,20 @@ def main(
     input_data_dir,
     output_data_dir,
     device,
+    load,
 ):
     """Train VAE Model."""
     ts = time.strftime("%Y-%b-%d-%H-%M-%S", time.gmtime())
 
     # 1. Create Dataset
     train_dataset = PennTreeBankDataset(
-        path=input_data_dir, split="train", load_dataset=False,
+        path=input_data_dir, split="train", load_dataset=load,
     )
     valid_dataset = PennTreeBankDataset(
-        path=input_data_dir, split="valid", load_dataset=False,
+        path=input_data_dir, split="valid", load_dataset=load,
     )
     test_dataset = PennTreeBankDataset(
-        path=input_data_dir, split="test", load_dataset=False,
+        path=input_data_dir, split="test", load_dataset=load,
     )
 
     train_loader = DataLoader(
@@ -418,12 +425,12 @@ def main(
             # print("NLL Loss: ", nll_loss.item())
             # print("KL Loss: ", kl_loss.item())
             # print("KL Weight", kl_weight)
-            if i == 3:
+            if i == len(train_loader)-1:
                 print("True Sentences: ")
-                print(rev(batch["text"][0:2], train_dataset))
-                gen, _ = model.infer(z=z[:2])
-                print("Target Sentences: ")
-                print(rev(batch["target"][0:2], train_dataset))
+                print(rev(batch["text"][0:10], train_dataset))
+                gen, _ = model.infer(z=z[:10])
+                #print("Target Sentences: ")
+                #print(rev(batch["target"][0:2], train_dataset))
                 print("Predicted Sentences: ")
                 print(rev(gen, train_dataset))
             optimizer.zero_grad()
