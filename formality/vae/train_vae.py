@@ -369,6 +369,8 @@ def main(
         eos_id=train_dataset.eos_id,
     )
 
+    if torch.cuda.device_count() > 1:
+        nn.DataParallel(model)
     model.to(device)
 
     # 4. Create tensorboard summary
