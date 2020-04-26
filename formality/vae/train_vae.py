@@ -117,6 +117,7 @@ def tokenizer(text):  # create a tokenizer function
 @click.option("-ne", "--epochs", default=10, show_default=True, help="Number of Epochs")
 @click.option("-st", "--steep", default=0.0025, show_default=True, help="Steepnes of KL Annealing")
 @click.option("-ct", "--centre", default=2500, show_default=True, help="Centre of KL Annealing function, KL Weight =0.5 at this iteration.")
+@click.option("-sg", "--strategy", default='random', show_default=True, help="Strategy for decoding. Options: [random, greedy].")
 @click.option(
     "-l",
     "--tensorboard-log",
@@ -154,6 +155,7 @@ def main(
     epochs,
     steep,
     centre,
+    strategy,
     tensorboard_log,
     input_data_dir,
     output_data_dir,
@@ -255,7 +257,7 @@ def main(
             if i == len(train_loader)-1:
                 print("True Sentences: ")
                 print(rev(batch["text"][0:10], train_dataset))
-                gen, _ = model.infer(z=z[:10])
+                gen, _ = model.infer(z=z[:10], strategy=strategy)
                 print("Predicted Sentences: ")
                 print(rev(gen, train_dataset))
             optimizer.zero_grad()
@@ -320,13 +322,13 @@ def main(
             )
             elbo += loss.item()
         writer.add_scalar("val-epoch/elbo", elbo / len(valid_loader), epoch)
-        if store:
-            latent_variables = {
-                "target": latent_store["target"],
-                "z": latent_store["z"].tolist(),
-            }
-            with open(output_data_dir + "dump_" + exp_name, "w") as f:
-                json.dump(latent_variables, f)
+        # if store:
+        #     latent_variables = {
+        #         "target": latent_store["target"],
+        #         "z": latent_store["z"].tolist(),
+        #     }
+        #     with open(output_data_dir + "dump_" + exp_name, "w") as f:
+        #         json.dump(latent_variables, f)
         return loss.item(), nll_loss.item(), kl_loss.item()
 
     step = 0

@@ -222,7 +222,7 @@ class VAE(nn.Module):
                 t += 1
             print("Generate Sentence: ", generated_sequence)
 
-    def infer(self, n=4, z=None):
+    def infer(self, n=4, z=None, strategy='greedy'):
         # TODO: Use Beam Search for Inference
         # Create hidden
         if z is None:
@@ -276,7 +276,8 @@ class VAE(nn.Module):
             else:
                 output, hidden = self.decoder_rnn(input_embedding, hidden)
             logits = self.output_to_vocab(output)
-            _, sample = torch.topk(logits, 1, dim=-1)
+            sample = self.sample_next_word(logits, strategy=strategy)
+            torch.topk(logits, 1, dim=-1)
             # print("Sample sizze: ", sample.size())
             input_seq = sample.squeeze()
             # Save the next word
@@ -309,6 +310,14 @@ class VAE(nn.Module):
             t += 1
 
         return generated_sequences, z
+    
+    def sample_next_word(self, logits, strategy='greedy'):
+        if strategy == 'greedy':
+            _, sample = torch.topk(logits, 1, dim=-1)
+            return sample
+        elif strategy == 'random':
+            sample = torch.randint(low = 0, high=logits.size(-1), size = (logits.size(0), 1)).to(self.device)
+            return sample
 
     def save_sample(self, save_to, sample, current_sequence, t):
         current = save_to[current_sequence]
