@@ -14,145 +14,11 @@ import sys
 from nltk.tokenize import TweetTokenizer
 from collections import Counter
 
+from dataset import PennTreeBankDataset
+
 spacy_en = spacy.load("en")
 
 
-class PennTreeBankDataset(Dataset):
-    """Penn Tree Bank Dataset."""
-
-    def __init__(
-        self,
-        path,
-        split,
-        load_dataset=True,
-        max_seq_len=60,
-        min_freq=3,
-        pad="<pad>",
-        unk="<unk>",
-        sos="<sos>",
-        eos="<eos>",
-    ):
-        self.path = path
-        self.split = split.lower()
-        self.data_file = self.path + "/ptb." + self.split + ".txt"
-        self.data_save = self.path + "/ptb." + self.split + ".json"
-        self.max_seq_len = max_seq_len
-        self.min_freq = min_freq
-
-        self.stoi = dict()
-        self.itos = dict()
-        self.pad = pad
-        self.unk = unk
-        self.sos = sos
-        self.eos = eos
-        self.pad_id = None
-        self.unk_id = None
-        self.sos_id = None
-        self.eos_id = None
-        self.vocab_size = None
-        self.vocab_save = path + "/ptb.vocab.json"
-
-        if load_dataset:
-            # TODO: Fix Bug when loading vocab itos ids become str
-            self._load_dataset()
-        else:
-            self._create_dataset()
-
-    def __len__(self,):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        idx = str(idx)
-        return {
-            "text": torch.tensor(self.data[idx]["text"]),
-            "target": torch.tensor(self.data[idx]["target"]),
-            "length": self.data[idx]["length"],
-        }
-
-    def _create_dataset(self):
-        # TODO: Use Bucket Iterator so remove padding from here
-        # TODO: Remove load dataset from here
-        if self.split == "train":
-            self._create_vocab()
-        else:
-            self._load_vocab()
-
-        tokenizer = TweetTokenizer(preserve_case=False)
-        data = defaultdict(dict)
-        with open(self.data_file, "r") as fobj:
-            for line in fobj:
-                words = tokenizer.tokenize(line)
-                text = [self.sos] + words
-                text = text[: self.max_seq_len]
-                target = words[: self.max_seq_len - 1]
-                target.append(self.eos)
-                length = len(text)
-                text.extend([self.pad] * (self.max_seq_len - length))
-                target.extend([self.pad] * (self.max_seq_len - length))
-
-                text = [self.stoi.get(word, self.stoi["<unk>"]) for word in text]
-                target = [self.stoi.get(word, self.stoi["<unk>"]) for word in target]
-                idx = len(data)
-                data[idx]["text"] = text
-                data[idx]["target"] = target
-                data[idx]["length"] = length
-
-        with open(self.data_save, "wb") as fobj:
-            data = json.dumps(data, ensure_ascii=False)
-            fobj.write(data.encode("utf8", "replace"))
-
-        self._load_dataset(vocab=False)
-
-    def _load_dataset(self, vocab=True):
-        with open(self.data_save, "rb") as fobj:
-            self.data = json.load(fobj)
-        if vocab:
-            self._load_vocab()
-
-    def _create_vocab(self,):
-        # TODO: Use Spacy tokenizer and handle unk
-        # TODO: Use Pickling
-        tokenizer = TweetTokenizer(preserve_case=False)
-        word_counter = Counter()
-        sp_tok = [self.pad, self.unk, self.sos, self.eos]
-        for tok in sp_tok:
-            self.itos[len(self.stoi)] = tok
-            self.stoi[tok] = len(self.stoi)
-        self.pad_id = self.stoi[self.pad]
-        self.unk_id = self.stoi[self.unk]
-        self.sos_id = self.stoi[self.sos]
-        self.eos_id = self.stoi[self.eos]
-
-        with open(self.data_file, "r") as fobj:
-            for line in fobj:
-                words = tokenizer.tokenize(line)
-                word_counter.update(words)
-
-        for word, count in word_counter.items():
-            if count > self.min_freq and word not in sp_tok:
-                idx = len(self.stoi)
-                self.itos[idx] = word
-                self.stoi[word] = idx
-
-        print("*" * 84)
-        print("Vocabulary Creation Complete.")
-        print("Number of words in vocab: {}".format(len(self.stoi)))
-        self.vocab_size = len(self.stoi)
-        vocab = {"stoi": self.stoi, "itos": self.itos}
-        with open(self.vocab_save, "wb") as fobj:
-            data = json.dumps(vocab, ensure_ascii=False)
-            fobj.write(data.encode("utf8", "replace"))
-
-    def _load_vocab(self):
-        with open(self.vocab_save, "rb") as fobj:
-            vocab = json.load(fobj)
-        self.stoi = vocab["stoi"]
-        self.itos = vocab["itos"]
-        self.vocab_size = len(self.stoi)
-        self.pad_id = self.stoi[self.pad]
-        self.unk_id = self.stoi[self.unk]
-        self.sos_id = self.stoi[self.sos]
-        self.eos_id = self.stoi[self.eos]
 
 
 def get_experiment_name(
@@ -249,6 +115,8 @@ def tokenizer(text):  # create a tokenizer function
     "-lr", "--learning-rate", default=0.001, show_default=True, help="Learning Rate"
 )
 @click.option("-ne", "--epochs", default=10, show_default=True, help="Number of Epochs")
+@click.option("-st", "--steep", default=0.0025, show_default=True, help="Steepnes of KL Annealing")
+@click.option("-ct", "--centre", default=2500, show_default=True, help="Centre of KL Annealing function, KL Weight =0.5 at this iteration.")
 @click.option(
     "-l",
     "--tensorboard-log",
@@ -259,7 +127,7 @@ def tokenizer(text):  # create a tokenizer function
 @click.option(
     "-i",
     "--input-data-dir",
-    default="./penn-treebank/",
+    default="../data/penn-treebank/",
     show_default=True,
     help="Input Data Directory",
 )
@@ -269,12 +137,6 @@ def tokenizer(text):  # create a tokenizer function
     default="./models/",
     show_default=True,
     help="Model Save Directory",
-)
-@click.option(
-    "--load/--create",
-    default=False,
-    show_default=True,
-    help="Load data or Create Data",
 )
 @click.option("-d", "--device", default="cpu", show_default=True, help="Device")
 def main(
@@ -290,24 +152,25 @@ def main(
     bidirectional,
     learning_rate,
     epochs,
+    steep,
+    centre,
     tensorboard_log,
     input_data_dir,
     output_data_dir,
     device,
-    load,
 ):
     """Train VAE Model."""
     ts = time.strftime("%Y-%b-%d-%H-%M-%S", time.gmtime())
 
     # 1. Create Dataset
     train_dataset = PennTreeBankDataset(
-        path=input_data_dir, split="train", load_dataset=load,
+        path=input_data_dir, split="train", load_dataset=True,
     )
     valid_dataset = PennTreeBankDataset(
-        path=input_data_dir, split="valid", load_dataset=load,
+        path=input_data_dir, split="valid", load_dataset=True,
     )
     test_dataset = PennTreeBankDataset(
-        path=input_data_dir, split="test", load_dataset=load,
+        path=input_data_dir, split="test", load_dataset=True,
     )
 
     train_loader = DataLoader(
@@ -386,7 +249,7 @@ def main(
             
             nll_loss = loss_function(logp, target)
             kl_loss, kl_weight = kld(
-                logvar, mean, i + epoch * len(train_loader), 0.0025, 2500
+                logvar, mean, i + epoch * len(train_loader), steep, centre
             )
             loss = (nll_loss + kl_loss * kl_weight) / batch_size
             if i == len(train_loader)-1:
@@ -412,7 +275,7 @@ def main(
             )
             writer.add_scalar(
                 "train/kl_weight",
-                kl_weight / batch_size,
+                kl_weight,
                 i + epoch * len(train_loader),
             )
             elbo += loss.item()
@@ -437,7 +300,7 @@ def main(
             # target = target.view(-1)
             nll_loss = loss_function(logp, target)
             kl_loss, kl_weight = kld(
-                logvar, mean, (epoch + 1) * len(valid_loader), 0.0025, 2500
+                logvar, mean, (epoch + 1) * len(valid_loader), steep, centre
             )
             loss = (nll_loss + kl_loss * kl_weight) / batch_size
 
@@ -453,7 +316,7 @@ def main(
                 i + epoch * len(valid_loader),
             )
             writer.add_scalar(
-                "val/kl_weight", kl_weight / batch_size, i + epoch * len(valid_loader)
+                "val/kl_weight", kl_weight, i + epoch * len(valid_loader)
             )
             elbo += loss.item()
         writer.add_scalar("val-epoch/elbo", elbo / len(valid_loader), epoch)
@@ -473,9 +336,11 @@ def main(
         if epoch == epochs - 1:
             save = True
         loss, n, k = train(step, device, epoch, save)
-        print("Train Loss: ", loss, "\t", n, "\t", k)
+        print("*"*25 + 'Epoch : ' + str(epoch) + "*"*25)
+        print("{:7}{:15}{}{:15}{}{:15}".format('', 'Total Loss', '\t', 'NLL Loss', '\t', 'KLL Loss'))
+        print("{:7}{:.5f}{}{:.5f}{}{:.5f}".format('Train:', loss, '\t', n, '\t', k))
         loss, n, k = eval(step, device, epoch, latent_store, save)
-        print("Eval Loss: ", loss, "\t", n, "\t", k)
+        print("{:7}{:.5f}{}{:.5f}{}{:.5f}".format('Valid:', loss, '\t', n, '\t', k))
 
 
 
