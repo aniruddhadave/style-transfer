@@ -257,7 +257,8 @@ def main(
             if i == len(train_loader)-1:
                 print("True Sentences: ")
                 print(rev(batch["text"][0:10], train_dataset))
-                gen, _ = model.infer(z=z[:10], strategy=strategy)
+                #gen, _ = model.infer(z=z[:10], strategy=strategy)
+                gen = model.beam_search(z = z[:10], beam_width=5)
                 print("Predicted Sentences: ")
                 print(rev(gen, train_dataset))
             optimizer.zero_grad()
