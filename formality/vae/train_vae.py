@@ -1,3 +1,5 @@
+"""Train a VAE Model."""
+
 import click
 import time
 from sequence_vae import VAE
@@ -67,7 +69,14 @@ def rev(batch, train_dataset):
     """Reverse string from tokens to words."""
     res = ""
     for i in range(batch.size(0)):
-        res += str(i) + " : " + " ".join([train_dataset.itos[word.item()] for word in batch[i] if word.item() != train_dataset.stoi['<pad>']])
+        res += str(i) + " : " #+ " ".join([train_dataset.itos[word.item()] for word in batch[i] if word.item() != train_dataset.stoi['<pad>']])
+        for word in batch[i]:
+            if word.item() == train_dataset.eos_id:
+                res += '.'
+                break
+            elif word.item() != train_dataset.pad_id and word.item() != train_dataset.sos_id:
+                res += ' '
+                res += train_dataset.itos[word.item()]
         res += "\n"
     return res
 
@@ -178,7 +187,7 @@ def main(
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False,
         pin_memory=torch.cuda.is_available(),
     )
     valid_loader = DataLoader(
@@ -286,7 +295,7 @@ def main(
         if save:
             checkpoint = output_data_dir + exp_name + str(epoch) + ".pt"
             torch.save(model.state_dict(), checkpoint)
-        return loss.item(), nll_loss.item(), kl_loss.item()
+        return loss.item()/batch_size, nll_loss.item()/batch_size, kl_loss.item()/batch_size
 
     def eval(step, device, epoch, latent_store, store=False):
         """Evaluation Loop."""
@@ -330,7 +339,7 @@ def main(
         #     }
         #     with open(output_data_dir + "dump_" + exp_name, "w") as f:
         #         json.dump(latent_variables, f)
-        return loss.item(), nll_loss.item(), kl_loss.item()
+        return loss.item()/batch_size, nll_loss.item()/batch_size, kl_loss.item()/batch_size
 
     step = 0
     latent_store = {}
