@@ -1,6 +1,59 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import heapq
+import sys
+
+class TopN(object):
+    """
+    Maintain top N elements.
+    Used to store Top N Beam objects.
+    """
+
+    def __init__(self, n):
+        self.n = n
+        self.data = []
+
+    def size(self):
+        assert self.data is not None
+        return len(self.data)
+
+    def push(self, x):
+        """Push new element."""
+        assert self.data is not None
+        if len(self.data) < self.n:
+            heapq.heappush(self.data, x)
+        else:
+            heapq.heappushpop(self.data, x)
+
+    def reset(self):
+        self.data = []
+
+    def extract(self, sort=False):
+        """Return top N elements."""
+        assert self.data is not None
+        data = self.data
+        if sort:
+            data.sort(reverse=True)
+        return data
+
+
+class Beam(object):
+    """Beam object for Beam Search."""
+
+    def __init__(self, sequence, hidden, logprob, score):
+        self.sequence = sequence
+        self.hidden = hidden
+        self.logprob = logprob
+        self.score = score
+
+    def __lt__(self, other):
+        assert isinstance(other, Beam)
+        return self.score > other.score
+
+    def __eq__(self, other):
+        assert isinstance(other, Beam)
+        return self.score == other.score
 
 
 class VAE(nn.Module):
@@ -381,27 +434,39 @@ class VAE(nn.Module):
                 hidden = hidden[:, : self.hidden_dim]
                 cell = cell.unsqueeze(0)
             hidden = hidden.unsqueeze(0)
-        sequences = torch.zeros(
-            (batch_size, beam_width, max_seq_len+1), device=self.device
-        ).long().fill_(self.sos_id)
-        candidate_scores = (
-            torch.zeros((batch_size, beam_width), device=self.device)
-            .float()
+        sequences = (
+            torch.zeros((batch_size, beam_width, max_seq_len + 1), device=self.device)
+            .long()
+            .fill_(self.sos_id)
         )
-    
-        if self.rnn_type == 'lstm':
+        candidate_scores = torch.zeros(
+            (batch_size, beam_width), device=self.device
+        ).float()
+
+        if self.rnn_type == "lstm":
             cell = self.tile(cell, 1, beam_width)
         hidden = self.tile(hidden, 1, beam_width)
         t = 0
         while t < max_seq_len:
             # print("Start: ", sequences.size())
-            #sequences = sequences.view(-1, max_seq_len)
+            # sequences = sequences.view(-1, max_seq_len)
             prev_word = sequences[:, :, t]
+            # print("***************************************Next Word**************************************")
+            # print("Previous word: ", prev_word, prev_word.size())
+            remaining_mask = prev_word != self.eos_id
+            # print("Remaining Mask: ", remaining_mask, remaining_mask.size())
+            # batch_size x beam_width
+
             t += 1
+            # if t == 1:
+            #    prev_word = prev_word[:, 0]
+            # batch_size x 1
+            # if t==2:
+
             prev_word = prev_word.view(-1, 1)
-            # print("Change View: ", prev_word.size())
+            # print("Reshape prev word: ", prev_word, prev_word.size())
             decoder_input_embedding = self.embedding(prev_word)
-            # print("Input Embedding: ", decoder_input_embedding.size())
+            # print("Input Embedding: ", decoder_input_embedding, decoder_input_embedding.size())
             if self.rnn_type == "lstm":
                 output, (hidden, cell) = self.decoder_rnn(
                     decoder_input_embedding, (hidden.contiguous(), cell.contiguous())
@@ -409,44 +474,82 @@ class VAE(nn.Module):
             else:
                 output, hidden = self.decoder_rnn(decoder_input_embedding, hidden)
             logits = self.output_to_vocab(output)
+            # print("Logits: ", logits.size())
             # logits = decoder(sequences.view(-1, max_seq_len))
             # (batch_size x beam_width) x max_seq_len
             logprobs = torch.log_softmax(logits, dim=-1)
             # print("Logprob: ", logprobs.size())
+
             values, indices = torch.topk(logprobs, dim=-1, k=beam_width)
-            # print("Values", values.size())
+            # print("Values: ", values, values.size())
+            # print("Indices: ", indices, indices.size())
             # (batch_size x beam_width) x beam_width
-            values = values.view(batch_size, beam_width * beam_width)
+            # if t==1:
+            # print(indices.size())
+            # sys.exit()
+            # sequences[:, :, t] = indices.squeeze(1)
+            # else:
+            if t == 1:
+                indices.squeeze_(1)
+                indices = indices.view(batch_size, beam_width, beam_width)
+                # print("Change view:", indices.size())
+                indices = indices[:, 0, :]
+                # print("Select: ", indices.size())
+                indices.squeeze_(1)
+                # print("Sequence: ", sequences.size())
+                # print("Indices: ", indices.size())
+                # batch size x beam width
+                sequences[:, :, t] = indices
+            else:
+                values = values.view(batch_size, beam_width * beam_width)
+                # print("Reshape Values: ", values.size())
 
-            candidate_scores_tiled = self.tile(candidate_scores, 1, beam_width)
-            # batch_size x (beam_width x beam_width)
-            values_to_select_from = candidate_scores_tiled + values
-            # batch_size x (beam_width x beam_width)
-            candidate_values, candidate_indices = torch.topk(
-                values_to_select_from, beam_width, dim=-1
-            )
-            # batch_size x beam_width
+                remaining_mask_tiled = self.tile(remaining_mask, 1, beam_width)
+                # print("Remaining mask size: ", remaining_mask_tiled.size())
+                # remaining_mask.view(batch_size, beam_width)
 
-            next_word_to_select = candidate_indices % beam_width
-            # batch_size x beam_width
-            sequence_to_select = candidate_indices // beam_width
-            # batch_size x beam_width
-            candidate_scores = candidate_values
+                candidate_scores_tiled = self.tile(candidate_scores, 1, beam_width)
+                # print("Candidate scores tiled: ", candidate_scores_tiled.size())
+                # batch_size x (beam_width x beam_width)
+                values_to_select_from = (
+                    candidate_scores_tiled + values * remaining_mask_tiled
+                )
+                # print("Values to select from: ", values_to_select_from, values_to_select_from.size())
+                # batch_size x (beam_width x beam_width)
+                candidate_values, candidate_indices = torch.topk(
+                    values_to_select_from, beam_width, dim=-1
+                )
+                # batch_size x beam_width
+                # print("Candidate Indices: ", candidate_indices)
 
-            values = values.view(batch_size, beam_width, beam_width)
-            indices = indices.view(batch_size, beam_width, beam_width)
-            for b in range(batch_size):
-                for w in range(beam_width):
-                    # print("word to fill: ", sequences[b, sequence_to_select[b, w], t])
-                    # print("fill this: ", indices[b, sequence_to_select[b, w], next_word_to_select[b, w]])
-                    sequences[b, sequence_to_select[b, w], t] = indices[b, sequence_to_select[b, w], next_word_to_select[b, w]]
-                    sequences[b, w] = sequences[b, sequence_to_select[b, w]]
-        #print(sequences.size())
+                next_word_to_select = candidate_indices % beam_width
+                # print("Next word to select: ", next_word_to_select)
+                # batch_size x beam_width
+                sequence_to_select = candidate_indices // beam_width
+                # print("Sequence to selecct: ", sequence_to_select)
+
+                # batch_size x beam_width
+                candidate_scores = candidate_values
+
+                values = values.view(batch_size, beam_width, beam_width)
+                indices = indices.view(batch_size, beam_width, beam_width)
+                for b in range(batch_size):
+                    for w in range(beam_width):
+                        # print("word to fill: ", sequences[b, sequence_to_select[b, w], t])
+                        # print("fill this: ", indices[b, sequence_to_select[b, w], next_word_to_select[b, w]])
+                        if not remaining_mask[b, sequence_to_select[b, w]]:
+                            sequences[b, sequence_to_select[b, w], t] = self.eos_id
+                        else:
+                            sequences[b, sequence_to_select[b, w], t] = indices[
+                                b, sequence_to_select[b, w], next_word_to_select[b, w]
+                            ]
+                        sequences[b, w] = sequences[b, sequence_to_select[b, w]]
+        # print(sequences.size())
         vals, inds = torch.topk(candidate_scores, dim=-1, k=1)
-        final_sequences = torch.zeros((batch_size, max_seq_len+1), device=self.device)
+        final_sequences = torch.zeros((batch_size, max_seq_len + 1), device=self.device)
         for b in range(batch_size):
             final_sequences[b] = sequences[b, inds[b]]
-        #return sequences.view(-1, max_seq_len+1)
+        # return sequences.view(-1, max_seq_len+1)
         return final_sequences
 
     def tile(self, a, dim, n_tile):
@@ -454,6 +557,118 @@ class VAE(nn.Module):
         repeat_idx = [1] * a.dim()
         repeat_idx[dim] = n_tile
         a = a.repeat(*(repeat_idx))
-        order_index = torch.tensor(
-            np.concatenate([init_dim * np.arange(n_tile) + i for i in range(init_dim)])).long().to(self.device)
+        order_index = (
+            torch.tensor(
+                np.concatenate(
+                    [init_dim * np.arange(n_tile) + i for i in range(init_dim)]
+                )
+            )
+            .long()
+            .to(self.device)
+        )
         return torch.index_select(a, dim, order_index)
+
+    def beam_search_v2(
+        self, n=4, max_seq_len=60, beam_width=3, z=None, length_norm_alpha=0.7
+    ):
+        best_beams = []
+        zall = z
+        if zall is not None:
+            n = zall.size(0)
+        for example in range(n):
+            batch_size = 1
+            if zall is None:
+                z = torch.randn([1, self.latent_dim]).to(self.device)
+            else:
+                z = zall[example]
+                z = z.unsqueeze(0)
+
+            hidden = self.latent_to_hidden(z)
+            if self.bidirectional or self.num_layers > 1:
+                if self.rnn_type == "lstm":
+                    hidden = hidden.view(
+                        self.hidden_factor, batch_size, self.hidden_dim * 2
+                    )
+                    cell = hidden[:, :, self.hidden_dim :]
+                    hidden = hidden[:, :, : self.hidden_dim]
+                else:
+                    hidden = hidden.view(
+                        self.hidden_factor, batch_size, self.hidden_dim
+                    )
+            else:
+                if self.rnn_type == "lstm":
+                    cell = hidden[:, self.hidden_dim :]
+                    hidden = hidden[:, : self.hidden_dim]
+                    cell = cell.unsqueeze(0)
+                hidden = hidden.unsqueeze(0)
+            if self.rnn_type == "lstm":
+                hidden = (hidden, cell)
+
+            initial_beam = Beam(
+                sequence=torch.tensor([self.sos_id]).unsqueeze(0).to(self.device),
+                hidden=hidden,
+                logprob=0.0,
+                score=0.0,
+            )
+
+            partial_sentences = TopN(beam_width)
+            partial_sentences.push(initial_beam)
+            complete_sentences = TopN(beam_width)
+
+            for _ in range(max_seq_len - 1):
+                partial_sentences_list = partial_sentences.extract()
+                partial_sentences.reset()
+
+                # Retrieve last word of the sentence
+                input_new = [
+                    (s.sequence[-1], len(s.sequence)) for s in partial_sentences_list
+                ]
+                hidden_new = [s.hidden for s in partial_sentences_list]
+
+                # Get probabilities and hidden states for all the Beams
+                probabilities_list, hidden_list = [], []
+                for inp_len, hidden_state in zip(input_new, hidden_new):
+                    inp, len_ = inp_len
+                    decoder_input_embedding = self.embedding(inp)
+                    decoder_input_embedding = decoder_input_embedding.unsqueeze(0)
+                    if self.rnn_type == "lstm":
+                        output, (hidden, cell) = self.decoder_rnn(
+                            decoder_input_embedding,
+                            (hidden[0].contiguous(), hidden[1].contiguous()),
+                        )
+                        hidden = (hidden, cell)
+                    else:
+                        output, hidden = self.decoder_rnn(
+                            decoder_input_embedding, hidden
+                        )
+                    logits = self.output_to_vocab(output)
+                    logprobs = torch.log_softmax(logits, dim=-1)
+                    probabilities_list.append(logprobs)
+                    hidden_list.append(hidden)
+
+                # For all the beams get candidates and append to list
+                for i, partial_sentence in enumerate(partial_sentences_list):
+                    current_hidden = hidden_list[i]
+                    current_probs = probabilities_list[i]
+                    values, indices = torch.topk(current_probs, dim=-1, k=beam_width)
+                    values = values.view(-1)
+                    indices = indices.view(-1)
+                    for word, p in zip(indices, values):
+                        sentence = torch.cat((partial_sentence.sequence,word.unsqueeze(0).unsqueeze(0)), dim =-1)
+                        logprob = partial_sentence.logprob + p
+                        score = logprob
+                        if word == self.eos_id:
+                            score /= len(sentence) ** length_norm_alpha
+                            beam = Beam(sentence, current_hidden, logprob, score)
+                            complete_sentences.push(beam)
+                        else:
+                            beam = Beam(sentence, current_hidden, logprob, score)
+                            partial_sentences.push(beam)
+                if partial_sentences.size() == 0:
+                    break
+            if not complete_sentences.size() == 0:
+                complete_sentences = partial_sentences
+            beams = complete_sentences.extract(sort=True)
+            best_beam = beams[0]
+            best_beams.append(best_beam.sequence)
+        return torch.cat(tuple(best_beams), dim =0).to(self.device)

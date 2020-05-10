@@ -21,8 +21,6 @@ from dataset import PennTreeBankDataset
 spacy_en = spacy.load("en")
 
 
-
-
 def get_experiment_name(
     embedding_dim,
     hidden_dim,
@@ -69,13 +67,18 @@ def rev(batch, train_dataset):
     """Reverse string from tokens to words."""
     res = ""
     for i in range(batch.size(0)):
-        res += str(i) + " : " #+ " ".join([train_dataset.itos[word.item()] for word in batch[i] if word.item() != train_dataset.stoi['<pad>']])
+        res += (
+            str(i) + " : "
+        )  # + " ".join([train_dataset.itos[word.item()] for word in batch[i] if word.item() != train_dataset.stoi['<pad>']])
         for word in batch[i]:
             if word.item() == train_dataset.eos_id:
-                res += '.'
+                res += "."
                 break
-            elif word.item() != train_dataset.pad_id and word.item() != train_dataset.sos_id:
-                res += ' '
+            elif (
+                word.item() != train_dataset.pad_id
+                and word.item() != train_dataset.sos_id
+            ):
+                res += " "
                 res += train_dataset.itos[word.item()]
         res += "\n"
     return res
@@ -104,7 +107,7 @@ def tokenizer(text):  # create a tokenizer function
 )
 @click.option("-dp", "--dropout", default=0.5, show_default=True, help="Dropout")
 @click.option(
-    "-wd", "--word-dropout", default=0.0, show_default=True, help="Word Dropout"
+    "-wd", "--word-dropout", default=0.4, show_default=True, help="Word Dropout"
 )
 @click.option("-bs", "--batch-size", default=32, show_default=True, help="Batch Size")
 @click.option(
@@ -124,9 +127,23 @@ def tokenizer(text):  # create a tokenizer function
     "-lr", "--learning-rate", default=0.001, show_default=True, help="Learning Rate"
 )
 @click.option("-ne", "--epochs", default=10, show_default=True, help="Number of Epochs")
-@click.option("-st", "--steep", default=0.0025, show_default=True, help="Steepnes of KL Annealing")
-@click.option("-ct", "--centre", default=2500, show_default=True, help="Centre of KL Annealing function, KL Weight =0.5 at this iteration.")
-@click.option("-sg", "--strategy", default='random', show_default=True, help="Strategy for decoding. Options: [random, greedy].")
+@click.option(
+    "-st", "--steep", default=0.0025, show_default=True, help="Steepnes of KL Annealing"
+)
+@click.option(
+    "-ct",
+    "--centre",
+    default=2500,
+    show_default=True,
+    help="Centre of KL Annealing function, KL Weight =0.5 at this iteration.",
+)
+@click.option(
+    "-sg",
+    "--strategy",
+    default="random",
+    show_default=True,
+    help="Strategy for decoding. Options: [random, greedy].",
+)
 @click.option(
     "-l",
     "--tensorboard-log",
@@ -173,6 +190,9 @@ def main(
     """Train VAE Model."""
     ts = time.strftime("%Y-%b-%d-%H-%M-%S", time.gmtime())
 
+    if torch.cuda.is_available():
+        device = 'cuda'
+
     # 1. Create Dataset
     train_dataset = PennTreeBankDataset(
         path=input_data_dir, split="train", load_dataset=True,
@@ -187,7 +207,7 @@ def main(
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=True,
         pin_memory=torch.cuda.is_available(),
     )
     valid_loader = DataLoader(
@@ -239,7 +259,7 @@ def main(
     writer = SummaryWriter(tensorboard_log + exp_name)
 
     loss_function = torch.nn.NLLLoss(
-        size_average=False, ignore_index=train_dataset.pad_id
+        reduction='sum', ignore_index=train_dataset.pad_id
     )
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -247,7 +267,10 @@ def main(
     def train(step, device, epoch, save):
         """Training Loop."""
         model.train()
-        elbo = 0
+        per_epoch_total_loss = 0
+        per_epoch_nll_loss = 0
+        per_epoch_kl_loss = 0
+        count = 0
         for i, batch in enumerate(train_loader):
             batch_size = batch["text"].size(0)
             text = batch["text"].to(device)  # batch_size x seq_len
@@ -256,25 +279,42 @@ def main(
 
             # Calculate loss
             logp = logp.view(-1, logp.size(2))
-            target = target[:, :torch.max(batch['length']).item()].contiguous().view(-1)
-            
+            # Flatten Target: [batch_size*seq_len]
+            target = (
+                target[:, : torch.max(batch["length"]).item()].contiguous().view(-1)
+            )
             nll_loss = loss_function(logp, target)
+
             kl_loss, kl_weight = kld(
                 logvar, mean, i + epoch * len(train_loader), steep, centre
             )
-            loss = (nll_loss + kl_loss * kl_weight) / batch_size
-            if i == len(train_loader)-1:
+            loss = (nll_loss + kl_loss * kl_weight) 
+            
+            
+            per_epoch_total_loss += loss.item()
+            per_epoch_nll_loss += nll_loss.item()
+            per_epoch_kl_loss += kl_loss.item()
+            count += batch_size
+
+            # Print for sanity check
+            if i == len(train_loader) - 1:
                 print("True Sentences: ")
                 print(rev(batch["text"][0:10], train_dataset))
-                #gen, _ = model.infer(z=z[:10], strategy=strategy)
-                gen = model.beam_search(z = z[:10], beam_width=5)
+                # gen, _ = model.infer(z=z[:10], strategy=strategy)
+                #gen = model.beam_search(z=z[:10], beam_width=5)
+                gen = model.beam_search(z=z[:10])
                 print("Predicted Sentences: ")
                 print(rev(gen, train_dataset))
+            
+            
+            
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             step += 1
-            writer.add_scalar("train/ELBO", loss.item(), i + epoch * len(train_loader))
+
+            # Tensorboard Logs
+            writer.add_scalar("train/ELBO", loss.item()/batch_size, i + epoch * len(train_loader))
             writer.add_scalar(
                 "train/nll_loss",
                 nll_loss.item() / batch_size,
@@ -286,21 +326,26 @@ def main(
                 i + epoch * len(train_loader),
             )
             writer.add_scalar(
-                "train/kl_weight",
-                kl_weight,
-                i + epoch * len(train_loader),
+                "train/kl_weight", kl_weight, i + epoch * len(train_loader),
             )
-            elbo += loss.item()
-        writer.add_scalar("train-epoch/elbo", elbo / len(train_loader), epoch)
+        
+        writer.add_scalar("train-epoch/elbo", per_epoch_total_loss / count, epoch)
         if save:
             checkpoint = output_data_dir + exp_name + str(epoch) + ".pt"
             torch.save(model.state_dict(), checkpoint)
-        return loss.item()/batch_size, nll_loss.item()/batch_size, kl_loss.item()/batch_size
+        return (
+            per_epoch_total_loss / count,
+            per_epoch_nll_loss / count,
+            per_epoch_kl_loss / count,
+        )
 
-    def eval(step, device, epoch, latent_store, store=False):
+    def evaluate(step, device, epoch, latent_store, store=False):
         """Evaluation Loop."""
         model.eval()
-        elbo = 0
+        per_epoch_total_loss = 0
+        per_epoch_nll_loss = 0
+        per_epoch_kl_loss = 0
+        count = 0
         for i, batch in enumerate(valid_loader):
             batch_size = batch["text"].size(0)
             text = batch["text"].to(device)  # batch_size x seq_len
@@ -308,15 +353,23 @@ def main(
             logp, mean, logvar, z = model(text, batch["length"])
             # Calculate loss
             logp = logp.view(-1, logp.size(2))
-            target = target[:, :torch.max(batch['length']).item()].contiguous().view(-1)
+            target = (
+                target[:, : torch.max(batch["length"]).item()].contiguous().view(-1)
+            )
             # target = target.view(-1)
             nll_loss = loss_function(logp, target)
             kl_loss, kl_weight = kld(
-                logvar, mean, (epoch + 1) * len(valid_loader), steep, centre
+                logvar, mean, i + epoch * len(valid_loader), steep, centre
             )
-            loss = (nll_loss + kl_loss * kl_weight) / batch_size
+            loss = (nll_loss + kl_loss * kl_weight)
+            
+            per_epoch_total_loss += loss.item()
+            per_epoch_nll_loss += nll_loss.item()
+            per_epoch_kl_loss += kl_loss.item()
+            count += batch_size
 
-            writer.add_scalar("val/ELBO", loss.item(), i + epoch * len(valid_loader))
+            # Tensorboard logs
+            writer.add_scalar("val/ELBO", loss.item()/batch_size, i + epoch * len(valid_loader))
             writer.add_scalar(
                 "val/nll_loss",
                 nll_loss.item() / batch_size,
@@ -327,11 +380,9 @@ def main(
                 kl_loss.item() / batch_size,
                 i + epoch * len(valid_loader),
             )
-            writer.add_scalar(
-                "val/kl_weight", kl_weight, i + epoch * len(valid_loader)
-            )
-            elbo += loss.item()
-        writer.add_scalar("val-epoch/elbo", elbo / len(valid_loader), epoch)
+            writer.add_scalar("val/kl_weight", kl_weight, i + epoch * len(valid_loader))
+        
+        writer.add_scalar("val-epoch/elbo", per_epoch_total_loss / count, epoch)
         # if store:
         #     latent_variables = {
         #         "target": latent_store["target"],
@@ -339,7 +390,11 @@ def main(
         #     }
         #     with open(output_data_dir + "dump_" + exp_name, "w") as f:
         #         json.dump(latent_variables, f)
-        return loss.item()/batch_size, nll_loss.item()/batch_size, kl_loss.item()/batch_size
+        return (
+            per_epoch_total_loss / count,
+            per_epoch_nll_loss / count,
+            per_epoch_kl_loss / count,
+        )
 
     step = 0
     latent_store = {}
@@ -348,12 +403,15 @@ def main(
         if epoch == epochs - 1:
             save = True
         loss, n, k = train(step, device, epoch, save)
-        print("*"*25 + 'Epoch : ' + str(epoch) + "*"*25)
-        print("{:7}{:15}{}{:15}{}{:15}".format('', 'Total Loss', '\t', 'NLL Loss', '\t', 'KLL Loss'))
-        print("{:7}{:.5f}{}{:.5f}{}{:.5f}".format('Train:', loss, '\t', n, '\t', k))
-        loss, n, k = eval(step, device, epoch, latent_store, save)
-        print("{:7}{:.5f}{}{:.5f}{}{:.5f}".format('Valid:', loss, '\t', n, '\t', k))
-
+        print("*" * 25 + "Epoch : " + str(epoch) + "*" * 25)
+        print(
+            "{:7}{:15}{}{:15}{}{:15}".format(
+                "", "Total Loss", "\t", "NLL Loss", "\t", "KLL Loss"
+            )
+        )
+        print("{:7}{:.5f}{}{:.5f}{}{:.5f}".format("Train:", loss, "\t", n, "\t", k))
+        loss, n, k = evaluate(step, device, epoch, latent_store, save)
+        print("{:7}{:.5f}{}{:.5f}{}{:.5f}".format("Valid:", loss, "\t", n, "\t", k))
 
 
 if __name__ == "__main__":
